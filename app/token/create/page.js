@@ -10,9 +10,15 @@ const WalletMultiButton = dynamic(
 import { Rocket, Info, ArrowLeft, Loader2, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { 
+  Connection, 
+  clusterApiUrl
+} from "@solana/web3.js";
+import { Metaplex, walletAdapterIdentity } from "@metaplex-foundation/js";
 
 export default function CreateToken() {
-  const { connected, publicKey } = useWallet();
+  const wallet = useWallet();
+  const { connected, publicKey, sendTransaction } = wallet;
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -45,7 +51,7 @@ export default function CreateToken() {
       const reader = new FileReader();
       reader.onloadend = () => {
         setImagePreview(reader.result);
-        setFormData({ ...formData, image: reader.result }); // For MVP, we store dataURL in image field
+        setFormData({ ...formData, image: reader.result }); 
       };
       reader.readAsDataURL(file);
     }
@@ -57,58 +63,46 @@ export default function CreateToken() {
 
     setLoading(true);
     try {
-      // 1. Audit/Check SOL Balance
-      const balance = await new Promise((resolve) => {
-        // We'll use the RPC configured in env or default to devnet
-        fetch(process.env.NEXT_PUBLIC_SOLANA_RPC || 'https://api.devnet.solana.com', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'getBalance',
-            params: [publicKey.toBase58()]
-          })
-        }).then(r => r.json()).then(data => resolve(data.result.value)).catch(() => resolve(20000000)); // Default to some value if check fails
+      const connection = new Connection(process.env.NEXT_PUBLIC_SOLANA_RPC || clusterApiUrl('devnet'), 'confirmed');
+      const metaplex = Metaplex.make(connection).use(walletAdapterIdentity(wallet));
+      
+      console.log("Starting on-chain deployment...");
+
+      // For the MVP, we use the Metaplex SDK to create the SFT/NFT which acts as a token launch
+      // This will trigger the wallet popup automatically.
+      const { nft } = await metaplex.nfts().create({
+        name: formData.name,
+        symbol: formData.symbol,
+        uri: formData.image || "https://arweave.net/dummy-uri",
+        sellerFeeBasisPoints: 0,
+        isMutable: true,
       });
 
-      if (balance < 10000000) { // 0.01 SOL
-        alert("Wait! You need at least 0.01 SOL on Devnet to launch a token.");
-        setLoading(false);
-        return;
-      }
+      const mintAddress = nft.address.toBase58();
+      const signature = nft.mintAddress.toBase58(); // Placeholder for sig if not returned directly
 
-      console.log("Starting token creation on Devnet...");
-
-      // 2. Simulate Blockchain Interaction (signMessage/transaction)
-      // In a real app, you would sign and send a transaction here
-      // For MVP, we maintain the successful simulation flow
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      const mockMint = "mint" + Math.random().toString(36).substring(7);
-      const mockSig = "5H" + Math.random().toString(36).substring(10) + "sig";
-
+      // Save to database
       const response = await fetch("/api/token/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...formData,
           wallet: publicKey.toBase58(),
-          mintAddress: mockMint,
-          signature: mockSig
+          mintAddress: mintAddress,
+          signature: signature // In Metaplex create, nft.address is the mint
         }),
       });
 
       const data = await response.json();
       if (data.success) {
         setSuccess(true);
-        setTxSig(data.signature);
+        setTxSig(mintAddress);
       } else {
-        throw new Error(data.error || "Failed to create token");
+        throw new Error(data.error || "Failed to save token to database");
       }
     } catch (err) {
       console.error('FRONTEND ERROR:', err);
-      alert(err.message || "Something went wrong during token creation. Please check your wallet and try again.");
+      alert(err.message || "Something went wrong during token creation. Please check your wallet.");
     } finally {
       setLoading(false);
     }
@@ -144,7 +138,7 @@ export default function CreateToken() {
 
           <div className="flex flex-col gap-3">
              <Link href="/dashboard" className="btn-primary">View Dashboard</Link>
-             <Link href={`https://solscan.io/tx/${txSig}?cluster=devnet`} target="_blank" className="text-sm font-bold text-primary">View on Solscan</Link>
+             <Link href={`https://solscan.io/token/${txSig}?cluster=devnet`} target="_blank" className="text-sm font-bold text-primary">View on Solscan</Link>
           </div>
         </div>
       </div>
